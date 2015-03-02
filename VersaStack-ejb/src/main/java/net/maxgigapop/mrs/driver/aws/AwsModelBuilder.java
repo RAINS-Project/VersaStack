@@ -59,7 +59,7 @@ public class AwsModelBuilder
         Property hasBidirectionalPort=Nml.hasBidirectionalPort;
         Property hasService =Nml.hasService;
         Property providesVM =Mrs.providesVM;
-        Property type = RdfOwl.type;
+        Property type = Mrs.type;
         Property providedByService =Mrs.providedByService;
         Property providesBucket =Mrs.providesBucket;
         Property providesRoute =Mrs.providesRoute;
@@ -119,22 +119,56 @@ public class AwsModelBuilder
         model.add(model.createStatement(awsTopology,hasService,ebsService));
         
         
+        
+        //put all the Internet gateways into the model
+        for(InternetGateway t: ec2Client.getInternetGateways())
+        {
+            String internetGatewayId = ec2Client.getIdTag(t.getInternetGatewayId());
+            Resource INTERNETGATEWAY = RdfOwl.createResource(model,topologyURI + ":" + internetGatewayId,port);
+            Resource IGW_LABEL= RdfOwl.createResource(model,topologyURI + ":igwLabel-" + internetGatewayId,Nml.Label);
+            model.add(model.createStatement(IGW_LABEL,Nml.labeltype,Nml.InternetGateway));
+            model.add(model.createStatement(IGW_LABEL,value,"any"));
+            model.add(model.createStatement(INTERNETGATEWAY, hasLabel,IGW_LABEL));
+        }
+        
+        //put all the Vpn gateways into the model
+        for(VpnGateway g : ec2Client.getVirtualPrivateGateways())
+        {
+            String vpnGatewayId = ec2Client.getIdTag(g.getVpnGatewayId());
+            Resource VPNGATEWAY = RdfOwl.createResource(model,topologyURI + ":" + vpnGatewayId,port);
+            Resource VPNGW_LABEL= RdfOwl.createResource(model,topologyURI + ":vpngwLabel-" + vpnGatewayId,Nml.Label);
+            model.add(model.createStatement(VPNGW_LABEL,Nml.labeltype,Nml.VpnGateway));
+            model.add(model.createStatement(VPNGW_LABEL,value,"any"));
+            model.add(model.createStatement(VPNGATEWAY, hasLabel,VPNGW_LABEL));
+        }
+        
         //put all the vpcs and their information into the model
         for(Vpc v : ec2Client.getVpcs())
         {
             String vpcId= ec2Client.getIdTag(v.getVpcId());
             Resource VPC = RdfOwl.createResource(model,topologyURI +":" + vpcId,topology);
+            Resource VPC_NETWORK_ADDRESS = 
+                    RdfOwl.createResource(model,topologyURI + ":vpcnetworkaddress-"+v.getVpcId(),networkAddress);
             model.add(model.createStatement(vpcService,providesVPC,VPC));
             model.add(model.createStatement(awsTopology,hasTopology,VPC));
+            model.add(model.createStatement(VPC_NETWORK_ADDRESS,type,"ipv4-prefix"));
+            model.add(model.createStatement(VPC_NETWORK_ADDRESS,value,v.getCidrBlock()));
+            model.add(model.createStatement(VPC,hasNetworkAddress,VPC_NETWORK_ADDRESS));
+            
             
             //put all the subnets within the vpc
-            Resource SWITCHINGSERVICE= RdfOwl.createResource(model,topologyURI + ":" +vpcId+v.getCidrBlock(),switchingService);
+            Resource SWITCHINGSERVICE= RdfOwl.createResource(model,topologyURI + ":switchingservice-" +vpcId,switchingService);
+            model.add(model.createStatement(VPC, hasService,SWITCHINGSERVICE));
             for(Subnet p: ec2Client.getSubnets(v.getVpcId()))
             {
                 String subnetId= ec2Client.getIdTag(p.getSubnetId());
                 Resource SUBNET= RdfOwl.createResource(model,topologyURI + ":" +subnetId,switchingSubnet);
-                model.add(model.createStatement(VPC, hasService,SWITCHINGSERVICE));
                 model.add(model.createStatement(SWITCHINGSERVICE, providesSubnet, SUBNET));
+                 Resource SUBNET_NETWORK_ADDRESS = 
+                 RdfOwl.createResource(model,topologyURI + ":subnetnetworkaddress-"+p.getSubnetId(),networkAddress); 
+                model.add(model.createStatement(SUBNET_NETWORK_ADDRESS,type,"ipv4-prefix"));
+                model.add(model.createStatement(SUBNET_NETWORK_ADDRESS,value,p.getCidrBlock()));
+                model.add(model.createStatement(SUBNET,hasNetworkAddress,SUBNET_NETWORK_ADDRESS));
             
                 //put all the intances inside this subnet into the model if there are any
                 List<Instance> instances = ec2Client.getInstances(p.getSubnetId());
@@ -195,10 +229,8 @@ public class AwsModelBuilder
                             //put the public Ip (if any) of the network interface into the model
                             if(n.getAssociation() !=null && n.getAssociation().getPublicIp()!=null)
                             {
-                                Resource PUBLIC_ADDRESS= RdfOwl.createResource(model,topologyURI + ":" +n.getAssociation().getPublicIp(),networkAddress);
-                                model.add(model.createStatement(PORT, publicIpAddress, PUBLIC_ADDRESS));
-                                model.add(model.createStatement(PUBLIC_ADDRESS, type, "ipv4-prefix-list"));
-                                model.add(model.createStatement(PUBLIC_ADDRESS,value,n.getAssociation().getPublicIp()));
+                                model.add(model.createStatement(PORT, publicIpAddress,topologyURI + ":" +n.getAssociation().getPublicIp()));
+                               
                             }
                         }
                     }
@@ -206,42 +238,59 @@ public class AwsModelBuilder
             }  
             
             //Make the L3 routing model for this VPC
-            /*Resource ROUTINGSERVICE=RdfOwl.createResource(model,topologyURI + ":routingservice-"+ v.getVpcId() ,routingService);
+            Resource ROUTINGSERVICE=RdfOwl.createResource(model,topologyURI + ":routingservice-"+ v.getVpcId() ,routingService);
             model.add(model.createStatement(VPC, hasService,ROUTINGSERVICE));
+            
+            int index =0;
             for(RouteTable t : ec2Client.getRoutingTables(v.getVpcId()))
             {
                 List<RouteTableAssociation> associations = t.getAssociations();
                 String routeTableId= ec2Client.getIdTag(t.getRouteTableId());
                 Resource ROUTINGTABLE = RdfOwl.createResource(model,topologyURI + ":" + routeTableId,routingTable);
                 model.add(model.createStatement(ROUTINGSERVICE,providesRoutingTable,ROUTINGTABLE));
+                boolean main = t.getAssociations().get(0).getMain();
+                if(main ==true)
+                    model.add(model.createStatement(ROUTINGTABLE,type,"main"));
+                else
+                    model.add(model.createStatement(ROUTINGTABLE,type,"local"));
                 List<Route> routes= t.getRoutes();
                     for(Route r : routes)
                     {
                         Resource ROUTE_TO=null;
                         Resource ROUTE_FROM=null;
                         int i=0;
+                        String routeId = t.getRouteTableId()+ r.getDestinationCidrBlock().replace("/","");
+                        Resource ROUTE = RdfOwl.createResource(model,topologyURI + ":" +routeId,route);
+                        model.add(model.createStatement(ROUTINGSERVICE,providesRoute,ROUTE));
                         do //get the routes from the amazon cloud to any destination
                         {
                           String target= r.getGatewayId();
                           InternetGateway internetGateway =ec2Client.getInternetGateway(target);
                           VpnGateway vpnGateway = ec2Client.getVirtualPrivateGateway(target);
-                          String routeId= routeTableId +r.getDestinationCidrBlock()+i;
-                          Resource ROUTE = RdfOwl.createResource(model,topologyURI + ":" + routeId,route);
-                          model.add(model.createStatement(ROUTINGSERVICE,providesRoute,ROUTE));
                           model.add(model.createStatement(ROUTINGTABLE, hasRoute,ROUTE));
                           
                           if(internetGateway!=null)
-                            model.add(model.createStatement(ROUTE,nextHop,topologyURI +":"+ ec2Client.getIdTag(internetGateway.getInternetGatewayId()))); 
+                          {
+                            Resource resource = model.getResource(topologyURI +":"+ ec2Client.getIdTag(internetGateway.getInternetGatewayId()));
+                            model.add(model.createStatement(ROUTE,nextHop,resource));
+                          }
                           else if(vpnGateway!=null)
-                            model.add(model.createStatement(ROUTE,nextHop,topologyURI +":"+ ec2Client.getIdTag(vpnGateway.getVpnGatewayId()))); 
+                          {
+                            Resource resource = model.getResource(topologyURI +":"+ ec2Client.getIdTag(vpnGateway.getVpnGatewayId()));
+                            model.add(model.createStatement(ROUTE,nextHop,resource)); 
+                          }
                           else
                             model.add(model.createStatement(ROUTE,nextHop,"local")); 
 
-                          ROUTE_TO= RdfOwl.createResource(model,topologyURI + "routeto-" +routeId, networkAddress);
-                          model.add(model.createStatement(ROUTE_TO,type,"ipv4-prefix-list"));
+                          ROUTE_TO= RdfOwl.createResource(model,topologyURI + "routeto-" +routeId + i, networkAddress);
+                          if(target.equals("local"))
+                              model.add(model.createStatement(ROUTE_TO,type,"ipv4-prefix"));
+                          else
+                              model.add(model.createStatement(ROUTE_TO,type,"ipv4-prefix-list"));
+                          
                           model.add(model.createStatement(ROUTE_TO,value,r.getDestinationCidrBlock()));
                           model.add(model.createStatement(ROUTE,routeTo, ROUTE_TO));
-                          
+                          String p =r.getOrigin();
                           if(r.getOrigin().equals("EnableVgwRoutePropagation"))
                           {
                               List<PropagatingVgw> propagating = t.getPropagatingVgws();
@@ -255,7 +304,7 @@ public class AwsModelBuilder
                                       if(at.getVpcId().equals(v.getVpcId()))
                                       {
                                           String gwId = ec2Client.getIdTag(gateway.getVpnGatewayId());
-                                          ROUTE_FROM= RdfOwl.createResource(model,topologyURI + "routefrom-" +routeId, networkAddress);
+                                          ROUTE_FROM= RdfOwl.createResource(model,topologyURI + ":routefrom-" +routeId +i, networkAddress);
                                           model.add(model.createStatement(ROUTE_FROM,type,"gateway")); 
                                           model.add(model.createStatement(ROUTE_FROM,value,topologyURI+":"+gwId)); 
                                           model.add(model.createStatement(ROUTE,routeFrom,ROUTE_FROM));
@@ -265,8 +314,8 @@ public class AwsModelBuilder
                           }
                           else
                           {
-                             ROUTE_FROM= RdfOwl.createResource(model,topologyURI + "routefrom-" +routeId, networkAddress);
-                             model.add(model.createStatement(ROUTE_FROM,type,"ipv4-prefix-list")); 
+                             ROUTE_FROM= RdfOwl.createResource(model,topologyURI + ":routefrom-" +routeId + i, networkAddress);
+                             model.add(model.createStatement(ROUTE_FROM,type,"subnet")); 
 
                              String subnetId= associations.get(i).getSubnetId();
                              if(subnetId==null)
@@ -281,10 +330,11 @@ public class AwsModelBuilder
                           }
                               
                           i++; //increment the association index
+                          index++; //increment the index for route Ids
                         }while(i<associations.size());
 
                     }
-            }*/
+            }
         }
         
         //put the volumes of the ebsService into the model
@@ -297,28 +347,14 @@ public class AwsModelBuilder
             model.add(model.createStatement(VOLUME, Mrs.disk_gb,Integer.toString(v.getSize())));
         }
         
-        /*//put all the Internet gateways into the model
-        for(InternetGateway t: ec2Client.getInternetGateways())
+        //put all the elastic ips under the account into the model
+        for(Address ip : ec2Client.getElasticIps())
         {
-            String internetGatewayId = ec2Client.getIdTag(t.getInternetGatewayId());
-            Resource INTERNETGATEWAY = RdfOwl.createResource(model,topologyURI + ":" + internetGatewayId,port);
-            Resource IGW_LABEL= RdfOwl.createResource(model,topologyURI + ":igwLabel-" + internetGatewayId,Nml.Label);
-            model.add(model.createStatement(IGW_LABEL,Nml.labeltype,Nml.InternetGateway));
-            model.add(model.createStatement(IGW_LABEL,value,"any"));
-            model.add(model.createStatement(INTERNETGATEWAY, hasLabel,IGW_LABEL));
+            Resource PUBLIC_ADDRESS= RdfOwl.createResource(model,topologyURI + ":" +ip.getPublicIp(),networkAddress);
+            model.add(model.createStatement(PUBLIC_ADDRESS, type, "ipv4-prefix-list"));
+            model.add(model.createStatement(PUBLIC_ADDRESS,value,ip.getPublicIp()));
         }
-        
-        //put all the Vpn gateways into the model
-        for(VpnGateway g : ec2Client.getVirtualPrivateGateways())
-        {
-            String vpnGatewayId = ec2Client.getIdTag(g.getVpnGatewayId());
-            Resource VPNGATEWAY = RdfOwl.createResource(model,topologyURI + ":" + vpnGatewayId,port);
-            Resource VPNGW_LABEL= RdfOwl.createResource(model,topologyURI + ":vpngwLabel-" + vpnGatewayId,Nml.Label);
-            model.add(model.createStatement(VPNGW_LABEL,Nml.labeltype,Nml.VpnGateway));
-            model.add(model.createStatement(VPNGW_LABEL,value,"any"));
-            model.add(model.createStatement(VPNGATEWAY, hasLabel,VPNGW_LABEL));
-        }*/
-        
+
         //put all the buckets of the s3Service into the model
         for(Bucket b: s3Client.getBuckets())
         {
